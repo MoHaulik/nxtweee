@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="utf-8">
-  <title>WebXR Vision Pro-Style Dialog</title>
+  <title>WebXR Video Panels</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <style>
     body { margin: 0; overflow: hidden; font-family: system-ui, sans-serif; background: #f0f2f5; }
@@ -16,7 +16,7 @@
   </style>
 </head>
 <body>
-  <div id="overlay"><button id="start-button">Start Vision Pro Dialog</button></div>
+  <div id="overlay"><button id="start-button">Start Video Panels</button></div>
   <button class="exit-ar" id="exit-ar">×</button>
   <div id="status"></div>
   
@@ -24,12 +24,14 @@
   <video id="video-1" loop muted playsinline crossorigin="anonymous"></video>
   <video id="video-2" loop muted playsinline crossorigin="anonymous"></video>
   <video id="video-3" loop muted playsinline crossorigin="anonymous"></video>
+  <video id="video-4" loop muted playsinline crossorigin="anonymous"></video>
+  <video id="video-5" loop muted playsinline crossorigin="anonymous"></video>
   
   <script type="module">
     import * as THREE from 'https://unpkg.com/three@0.150.1/build/three.module.js';
 
     // Main variables
-    let camera, scene, renderer, controllers = [], xrSession = null, raycaster, tempMatrix, dialogSystem;
+    let camera, scene, renderer, controllers = [], xrSession = null, raycaster, tempMatrix, videoPanel;
     
     // Simple tweening utility
     class Tween {
@@ -52,12 +54,6 @@
       static easeOutElastic(t) {
         const p = 0.3;
         return Math.pow(2, -10 * t) * Math.sin((t - p / 4) * (2 * Math.PI) / p) + 1;
-      }
-      
-      static easeOutBack(t) {
-        const c1 = 1.70158;
-        const c3 = c1 + 1;
-        return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
       }
       
       update(currentTime) {
@@ -141,7 +137,7 @@
       // Interaction setup
       raycaster = new THREE.Raycaster();
       tempMatrix = new THREE.Matrix4();
-      dialogSystem = new DialogSystem();
+      videoPanel = new VideoPanelSystem();
       
       // Event listeners
       window.addEventListener('resize', () => {
@@ -215,13 +211,13 @@
         return controller;
       });
       
-      // Initialize dialog system and start
-      dialogSystem.init(scene, camera);
-      setTimeout(() => dialogSystem.startDialogSequence(), 1000);
+      // Initialize video panel and start
+      videoPanel.init(scene, camera);
+      setTimeout(() => videoPanel.startSequence(), 1000);
       
       renderer.setAnimationLoop(render);
       session.addEventListener('end', onSessionEnd);
-      updateStatus('Vision Pro Dialog ready! Tap anywhere on the panel to advance.');
+      updateStatus('Video Panels ready! Tap anywhere on the panel to advance.');
     }
     
     function onSessionEnd() {
@@ -262,7 +258,7 @@
       raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
       raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix);
       
-      const interactiveObjects = dialogSystem.getInteractiveObjects();
+      const interactiveObjects = videoPanel.getInteractiveObjects();
       const intersects = raycaster.intersectObjects(interactiveObjects, true);
       
       if (intersects.length > 0) {
@@ -270,8 +266,6 @@
         let current = intersects[0].object;
         while (current) {
           if (current.userData && current.userData.onClick) {
-            // Trigger pulse animation
-            pulseMesh(current);
             current.userData.onClick();
             break;
           }
@@ -280,61 +274,12 @@
       }
     }
     
-    // Create pulse animation for mesh
-    function pulseMesh(mesh) {
-      if (!mesh) return;
-      
-      // Store original scale
-      if (!mesh.userData.originalScale) {
-        mesh.userData.originalScale = mesh.scale.clone();
-      }
-      
-      // Scale up quickly
-      const originalScaleX = mesh.userData.originalScale.x;
-      const originalScaleY = mesh.userData.originalScale.y;
-      const originalScaleZ = mesh.userData.originalScale.z;
-      
-      mesh.scale.set(
-        originalScaleX * 1.05, 
-        originalScaleY * 1.05, 
-        originalScaleZ * 1.05
-      );
-      
-      // Scale back down with elastic effect
-      tweenManager.add(new Tween(
-        mesh.scale, 
-        'x', 
-        mesh.scale.x, 
-        originalScaleX, 
-        300, 
-        Tween.easeOutElastic
-      ));
-      
-      tweenManager.add(new Tween(
-        mesh.scale, 
-        'y', 
-        mesh.scale.y, 
-        originalScaleY, 
-        300, 
-        Tween.easeOutElastic
-      ));
-      
-      tweenManager.add(new Tween(
-        mesh.scale, 
-        'z', 
-        mesh.scale.z, 
-        originalScaleZ, 
-        300, 
-        Tween.easeOutElastic
-      ));
-    }
-    
     function render(timestamp) {
       // Update tweens
       tweenManager.update(timestamp);
       
-      // Update dialog system
-      if (dialogSystem) dialogSystem.update(camera, timestamp);
+      // Update video panel
+      if (videoPanel) videoPanel.update(camera, timestamp);
       
       // Check controller interaction
       controllers.forEach(controller => {
@@ -343,7 +288,7 @@
           raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
           raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix);
           
-          const interactiveObjects = dialogSystem.getInteractiveObjects();
+          const interactiveObjects = videoPanel.getInteractiveObjects();
           const intersects = raycaster.intersectObjects(interactiveObjects, true);
           
           if (intersects.length > 0) {
@@ -351,7 +296,6 @@
             const object = intersects[0].object;
             if (object.material && !object.userData.isHovered) {
               object.userData.isHovered = true;
-              // Apply subtle effect rather than color change for better performance
               if (object.scale.x === 1) {
                 object.scale.set(1.05, 1.05, 1.05);
               }
@@ -374,42 +318,22 @@
       }
     }
     
-    // Vision Pro Style Dialog System - Simplified version
-    class DialogSystem {
+    // Video Panel System
+    class VideoPanelSystem {
       constructor() {
-        this.dialogPanel = null;
-        this.currentDialogIndex = 0;
+        this.panel = null;
+        this.currentIndex = 0;
         this.isActive = false;
-        this.textElement = null;
-        this.videoElement = null;
-        this.dialogGroup = null;
+        this.panelGroup = null;
         this.videoMaterials = {};
-        this.fixedPosition = new THREE.Vector3(0, 0, -2); // Fixed position further out
         
-        // Dialog content with embedded video flags
-        this.dialogSequence = [
-          { 
-            message: "Welcome to the Vision Pro style interface. This demonstrates a clean, minimal design inspired by modern spatial computing interfaces.", 
-            showVideo: false 
-          },
-          { 
-            message: "Tap anywhere on this panel to advance to the next card. The next card will showcase how videos can be integrated into this interface.", 
-            showVideo: false 
-          },
-          { 
-            message: "Here's a demonstration of embedded video content:", 
-            showVideo: true,
-            videoIndex: 1 
-          },
-          { 
-            message: "The beige panel with orange glow creates depth while maintaining readability in various lighting conditions.", 
-            showVideo: false 
-          },
-          { 
-            message: "Videos can help explain complex concepts in spatial computing:", 
-            showVideo: true,
-            videoIndex: 2 
-          }
+        // Create a sequence of 5 video panels
+        this.sequence = [
+          { videoIndex: 1 },
+          { videoIndex: 2 },
+          { videoIndex: 3 },
+          { videoIndex: 4 },
+          { videoIndex: 5 }
         ];
         
         // Preload video assets
@@ -422,7 +346,6 @@
           const video = document.getElementById(elementId);
           
           // Use placeholder video URLs or data URLs
-          // For a real app, you would use actual video files
           const placeholderUrl = url || this.createVideoPlaceholder(index);
           video.src = placeholderUrl;
           
@@ -445,17 +368,19 @@
         setupVideo(1, null, 'video-1');
         setupVideo(2, null, 'video-2');
         setupVideo(3, null, 'video-3');
+        setupVideo(4, null, 'video-4');
+        setupVideo(5, null, 'video-5');
       }
       
       // Create placeholder animated "video" content using canvas
       createVideoPlaceholder(index) {
         const canvas = document.createElement('canvas');
         canvas.width = 512;
-        canvas.height = 288; // 16:9 aspect ratio
+        canvas.height = 512; // Square for simplicity
         const ctx = canvas.getContext('2d');
         
         // Create a data URL for a "fake" video placeholder
-        const colors = ['#34C759', '#5AC8FA', '#AF52DE'];
+        const colors = ['#34C759', '#5AC8FA', '#AF52DE', '#FF3B30', '#FFCC00'];
         const color = colors[(index - 1) % colors.length];
         
         // Draw something that looks like a video with animation
@@ -475,26 +400,20 @@
             ctx.fill();
           }
           
-          // Draw fake play controls
-          ctx.fillStyle = 'rgba(255,255,255,0.8)';
-          ctx.beginPath();
-          ctx.arc(canvas.width / 2, canvas.height / 2, 25, 0, Math.PI * 2);
-          ctx.fill();
+          // Add a label showing which video this is
+          ctx.fillStyle = 'rgba(0,0,0,0.5)';
+          ctx.fillRect(canvas.width/2 - 50, canvas.height - 80, 100, 40);
           
-          ctx.fillStyle = color;
-          ctx.beginPath();
-          ctx.moveTo(canvas.width / 2 - 8, canvas.height / 2 - 15);
-          ctx.lineTo(canvas.width / 2 - 8, canvas.height / 2 + 15);
-          ctx.lineTo(canvas.width / 2 + 15, canvas.height / 2);
-          ctx.closePath();
-          ctx.fill();
+          ctx.fillStyle = 'white';
+          ctx.font = 'bold 24px sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText('Video ' + index, canvas.width/2, canvas.height - 60);
         };
         
         // Initial draw
         drawFrame();
         
-        // To make it actually animate, we would need to repeatedly update the texture
-        // This is just a simple placeholder, so we'll just return a static image
         return canvas.toDataURL();
       }
       
@@ -502,160 +421,100 @@
         this.scene = scene;
         this.camera = camera;
         
-        // Create dialog group
-        this.dialogGroup = new THREE.Group();
-        this.dialogGroup.position.set(0, 0, -2); // Position further away from user
+        // Create panel group
+        this.panelGroup = new THREE.Group();
+        this.panelGroup.position.set(0, 0, -0.6);
         // Make initially invisible for animation
-        this.dialogGroup.scale.set(0.5, 0.5, 0.5);
-        this.dialogGroup.userData.opacity = 0;
-        this.scene.add(this.dialogGroup);
+        this.panelGroup.scale.set(0.5, 0.5, 0.5);
+        this.scene.add(this.panelGroup);
         
-        this.createDialogPanel();
+        this.createPanel();
       }
       
-      createDialogPanel() {
+      createPanel() {
+        // Create a panel for displaying videos
         const panel = new THREE.Group();
         const panelWidth = 0.7;
-        const panelHeight = 0.4;
+        const panelHeight = 0.5;
         
-        // Create simplified panel with orange glow
-        this.createSimplePanel(panel, panelWidth, panelHeight);
+        // Create rounded rectangle shape for videos
+        const shapeCanvas = document.createElement('canvas');
+        shapeCanvas.width = 512;
+        shapeCanvas.height = 512;
+        const shapeCtx = shapeCanvas.getContext('2d');
         
-        // Text canvas for dynamic text rendering
-        const textCanvas = document.createElement('canvas');
-        textCanvas.width = 512;
-        textCanvas.height = 256;
-        const textCtx = textCanvas.getContext('2d');
-        const textTexture = new THREE.CanvasTexture(textCanvas);
+        // Draw rounded rectangle shape
+        const cornerRadius = 40;
+        shapeCtx.beginPath();
+        shapeCtx.moveTo(cornerRadius, 0);
+        shapeCtx.lineTo(shapeCanvas.width - cornerRadius, 0);
+        shapeCtx.quadraticCurveTo(shapeCanvas.width, 0, shapeCanvas.width, cornerRadius);
+        shapeCtx.lineTo(shapeCanvas.width, shapeCanvas.height - cornerRadius);
+        shapeCtx.quadraticCurveTo(shapeCanvas.width, shapeCanvas.height, shapeCanvas.width - cornerRadius, shapeCanvas.height);
+        shapeCtx.lineTo(cornerRadius, shapeCanvas.height);
+        shapeCtx.quadraticCurveTo(0, shapeCanvas.height, 0, shapeCanvas.height - cornerRadius);
+        shapeCtx.lineTo(0, cornerRadius);
+        shapeCtx.quadraticCurveTo(0, 0, cornerRadius, 0);
+        shapeCtx.closePath();
         
-        // Text element
-        this.textElement = new THREE.Mesh(
-          new THREE.PlaneGeometry(panelWidth * 0.9, panelHeight * 0.5),
-          new THREE.MeshBasicMaterial({
-            map: textTexture,
-            transparent: true,
-            side: THREE.DoubleSide
-          })
-        );
-        this.textElement.position.set(0, panelHeight * 0.15, 0.01);
+        shapeCtx.fillStyle = 'white';
+        shapeCtx.fill();
         
-        // Method to update text
-        this.textElement.userData.updateText = (text) => {
-          textCtx.clearRect(0, 0, 512, 256);
-          
-          // Set text properties for Vision Pro style
-          textCtx.font = '24px sans-serif';
-          textCtx.fillStyle = 'rgba(0,0,0,0.8)';
-          textCtx.textAlign = 'center';
-          textCtx.textBaseline = 'middle';
-          
-          // Word wrap for centered text
-          const words = text.split(' ');
-          const maxWidth = 450;
-          let lines = [];
-          let currentLine = '';
-          
-          for (let i = 0; i < words.length; i++) {
-            const testLine = currentLine + words[i] + ' ';
-            const metrics = textCtx.measureText(testLine);
-            
-            if (metrics.width > maxWidth && i > 0) {
-              lines.push(currentLine.trim());
-              currentLine = words[i] + ' ';
-            } else {
-              currentLine = testLine;
-            }
-          }
-          lines.push(currentLine.trim());
-          
-          // Draw centered text
-          const lineHeight = 32;
-          const totalTextHeight = lines.length * lineHeight;
-          let yPos = 128 - (totalTextHeight / 2) + (lineHeight / 2);
-          
-          lines.forEach(line => {
-            textCtx.fillText(line, 256, yPos);
-            yPos += lineHeight;
-          });
-          
-          textTexture.needsUpdate = true;
-        };
+        const maskTexture = new THREE.CanvasTexture(shapeCanvas);
         
-        panel.add(this.textElement);
-        
-        // Video element for displaying videos in the center
-        const videoWidth = panelWidth * 0.6;
-        const videoHeight = videoWidth * (9/16); // 16:9 aspect ratio
-        
-        this.videoElement = new THREE.Mesh(
-          new THREE.PlaneGeometry(videoWidth, videoHeight),
+        // Main video plane
+        this.videoPlane = new THREE.Mesh(
+          new THREE.PlaneGeometry(panelWidth, panelHeight),
           new THREE.MeshBasicMaterial({
             color: 0xffffff,
             transparent: true,
-            opacity: 0
+            opacity: 1
           })
         );
-        this.videoElement.position.set(0, -panelHeight * 0.08, 0.015);
-        panel.add(this.videoElement);
         
-        this.dialogGroup.add(panel);
-        this.dialogPanel = panel;
-        this.dialogPanel.visible = false;
-      }
-      
-      // Create a simplified panel with orange glow
-      createSimplePanel(panel, width, height) {
-        // Main panel with beige color and transparency
-        const panelGeometry = new THREE.RoundedBoxGeometry(width, height, 0.01, 0.04, 4);
-        const panelMaterial = new THREE.MeshBasicMaterial({
-          color: 0xf5e8d3, // Beige color
-          transparent: true,
-          opacity: 0.85
-        });
-        
-        const mainPanel = new THREE.Mesh(panelGeometry, panelMaterial);
-        panel.add(mainPanel);
-        
-        // Orange glow effect using a slightly larger, blurred plane behind the panel
-        const glowGeometry = new THREE.PlaneGeometry(width * 1.05, height * 1.05);
-        const glowMaterial = new THREE.MeshBasicMaterial({
-          color: 0xff8c42, // Orange color
-          transparent: true,
-          opacity: 0.25,
-          side: THREE.DoubleSide
-        });
-        
-        const glowPlane = new THREE.Mesh(glowGeometry, glowMaterial);
-        glowPlane.position.z = -0.01; // Just behind the main panel
-        panel.add(glowPlane);
-        
-        // Make entire panel interactive
-        mainPanel.userData.onClick = () => {
-          this.showNextDialog();
+        // Make the whole panel interactive
+        this.videoPlane.userData.onClick = () => {
+          this.showNextVideo();
         };
         
-        return mainPanel;
+        panel.add(this.videoPlane);
+        
+        // Create border outline
+        const border = new THREE.Mesh(
+          new THREE.PlaneGeometry(panelWidth + 0.02, panelHeight + 0.02),
+          new THREE.MeshBasicMaterial({
+            map: maskTexture,
+            transparent: true,
+            opacity: 0.3,
+            color: 0xffffff
+          })
+        );
+        border.position.z = -0.001;
+        panel.add(border);
+        
+        this.panelGroup.add(panel);
+        this.panel = panel;
+        this.panel.visible = false;
       }
       
-      startDialogSequence() {
+      startSequence() {
         this.isActive = true;
-        this.currentDialogIndex = 0;
-        this.dialogPanel.visible = true;
+        this.currentIndex = 0;
+        this.panel.visible = true;
         
         // Entrance animation
-        this.animateEntranceEffect();
+        this.animateEntrance();
         
-        this.showCurrentDialog();
+        this.showCurrentVideo();
       }
       
-      animateEntranceEffect() {
+      animateEntrance() {
         // Reset transforms
-        this.dialogGroup.scale.set(0.6, 0.6, 0.6);
-        this.dialogGroup.position.copy(this.fixedPosition);
-        this.dialogGroup.position.y += 0.2; // Start a bit higher for animation
+        this.panelGroup.scale.set(0.6, 0.6, 0.6);
+        this.panelGroup.position.set(0, 0.1, -0.8);
         
         // Apply materials opacity
-        this.dialogPanel.traverse(obj => {
+        this.panel.traverse(obj => {
           if (obj.material && obj.material.opacity !== undefined) {
             obj.material.opacity = 0;
           }
@@ -663,7 +522,7 @@
         
         // Animate scale
         tweenManager.add(new Tween(
-          this.dialogGroup.scale, 
+          this.panelGroup.scale, 
           'x', 
           0.6, 
           1.0, 
@@ -672,7 +531,7 @@
         ));
         
         tweenManager.add(new Tween(
-          this.dialogGroup.scale, 
+          this.panelGroup.scale, 
           'y', 
           0.6, 
           1.0, 
@@ -682,21 +541,27 @@
         
         // Animate position
         tweenManager.add(new Tween(
-          this.dialogGroup.position, 
+          this.panelGroup.position, 
           'y', 
-          this.dialogGroup.position.y, 
-          this.fixedPosition.y, 
+          0.1, 
+          0, 
+          700, 
+          Tween.easeOutCubic
+        ));
+        
+        tweenManager.add(new Tween(
+          this.panelGroup.position, 
+          'z', 
+          -0.8, 
+          -0.6, 
           700, 
           Tween.easeOutCubic
         ));
         
         // Fade in all materials
-        this.dialogPanel.traverse(obj => {
+        this.panel.traverse(obj => {
           if (obj.material && obj.material.opacity !== undefined) {
-            const targetOpacity = obj.material.opacity === 0 ? 
-              (obj.userData.targetOpacity || 
-               (obj.material.color && obj.material.color.getHex() === 0xff8c42 ? 0.25 : 0.85)) : 
-              obj.material.opacity;
+            const targetOpacity = obj === this.videoPlane ? 1 : 0.3;
             
             tweenManager.add(new Tween(
               obj.material, 
@@ -710,21 +575,21 @@
         });
       }
       
-      animateExitEffect(onComplete) {
+      animateExit(onComplete) {
         // Scale down
         tweenManager.add(new Tween(
-          this.dialogGroup.scale, 
+          this.panelGroup.scale, 
           'x', 
-          this.dialogGroup.scale.x, 
+          this.panelGroup.scale.x, 
           0.6, 
           400, 
           Tween.easeOutCubic
         ));
         
         tweenManager.add(new Tween(
-          this.dialogGroup.scale, 
+          this.panelGroup.scale, 
           'y', 
-          this.dialogGroup.scale.y, 
+          this.panelGroup.scale.y, 
           0.6, 
           400, 
           Tween.easeOutCubic
@@ -732,16 +597,16 @@
         
         // Move away
         tweenManager.add(new Tween(
-          this.dialogGroup.position, 
-          'y', 
-          this.dialogGroup.position.y, 
-          this.dialogGroup.position.y - 0.2, 
+          this.panelGroup.position, 
+          'z', 
+          this.panelGroup.position.z, 
+          -0.9, 
           500, 
           Tween.easeOutCubic
         ));
         
         // Fade out all materials
-        this.dialogPanel.traverse(obj => {
+        this.panel.traverse(obj => {
           if (obj.material && obj.material.opacity > 0) {
             tweenManager.add(new Tween(
               obj.material, 
@@ -756,73 +621,60 @@
         });
       }
       
-      showCurrentDialog() {
-        if (this.currentDialogIndex >= this.dialogSequence.length) {
+      showCurrentVideo() {
+        if (this.currentIndex >= this.sequence.length) {
           // Loop back to the beginning
-          this.currentDialogIndex = 0;
-          updateStatus("Restarting dialog sequence...");
+          this.currentIndex = 0;
+          updateStatus("Restarting video sequence...");
         }
         
-        const dialog = this.dialogSequence[this.currentDialogIndex];
+        const item = this.sequence[this.currentIndex];
         
-        // Update text
-        this.textElement.userData.updateText(dialog.message);
-        
-        // Handle video display
-        if (dialog.showVideo && dialog.videoIndex && this.videoMaterials[dialog.videoIndex]) {
-          const videoMaterial = this.videoMaterials[dialog.videoIndex].material;
-          this.videoElement.material = videoMaterial;
+        // Get video material for current index
+        if (item.videoIndex && this.videoMaterials[item.videoIndex]) {
+          // Apply video texture to the panel
+          this.videoPlane.material = this.videoMaterials[item.videoIndex].material;
           
-          // Animate video appearance
-          tweenManager.add(new Tween(
-            this.videoElement.material, 
-            'opacity', 
-            0, 
-            1, 
-            400, 
-            Tween.easeOutCubic
-          ));
+          // Play the video
+          this.videoMaterials[item.videoIndex].video.play().catch(() => {});
           
-          this.videoMaterials[dialog.videoIndex].video.play().catch(() => {});
-        } else {
-          // Hide video when not needed
-          tweenManager.add(new Tween(
-            this.videoElement.material, 
-            'opacity', 
-            this.videoElement.material.opacity, 
-            0, 
-            200, 
-            Tween.easeOutCubic,
-            () => {
-              // Pause all videos when not showing
-              Object.values(this.videoMaterials).forEach(material => {
-                if (material.video) material.video.pause();
-              });
+          // Pause all other videos
+          Object.entries(this.videoMaterials).forEach(([index, material]) => {
+            if (parseInt(index) !== item.videoIndex && material.video) {
+              material.video.pause();
             }
-          ));
+          });
         }
       }
       
-      showNextDialog() {
-        // Animate transition to next dialog
-        this.animateExitEffect(() => {
-          this.currentDialogIndex++;
-          this.showCurrentDialog();
-          this.animateEntranceEffect();
+      showNextVideo() {
+        // Animate transition to next video
+        this.animateExit(() => {
+          this.currentIndex++;
+          this.showCurrentVideo();
+          this.animateEntrance();
         });
       }
       
       update(camera, timestamp) {
-        if (!this.isActive || !this.dialogGroup || !camera) return;
+        if (!this.isActive || !this.panelGroup || !camera) return;
         
-        // Keep the panel in a fixed position but rotate to face the user
-        const cameraDirection = new THREE.Vector3().subVectors(camera.position, this.dialogGroup.position);
-        this.dialogGroup.lookAt(camera.position);
+        // Position panel in front of camera
+        const cameraDirection = new THREE.Vector3(0, 0, -1);
+        cameraDirection.applyQuaternion(camera.quaternion);
+        cameraDirection.multiplyScalar(0.8); // Distance from camera
         
-        // Update video textures when visible
-        if (this.dialogSequence[this.currentDialogIndex] && 
-            this.dialogSequence[this.currentDialogIndex].showVideo) {
-          const videoIndex = this.dialogSequence[this.currentDialogIndex].videoIndex;
+        const targetPosition = new THREE.Vector3().copy(camera.position).add(cameraDirection);
+        // Faster position interpolation for Quest
+        this.panelGroup.position.lerp(targetPosition, 0.25);
+        
+        // Always face the camera
+        this.panelGroup.lookAt(camera.position);
+        
+        // Update video texture when visible
+        if (this.sequence[this.currentIndex] && 
+            this.sequence[this.currentIndex].videoIndex) {
+          const videoIndex = this.sequence[this.currentIndex].videoIndex;
           if (this.videoMaterials[videoIndex] && this.videoMaterials[videoIndex].texture) {
             this.videoMaterials[videoIndex].texture.needsUpdate = true;
           }
@@ -831,7 +683,7 @@
       
       getInteractiveObjects() {
         // Return all objects that can be interacted with
-        return this.dialogPanel ? [this.dialogPanel.children[0]] : []; // Return the main panel
+        return this.panel ? [this.videoPlane] : [];
       }
     }
     
