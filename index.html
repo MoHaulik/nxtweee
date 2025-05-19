@@ -1,0 +1,842 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>WebXR Vision Pro-Style Dialog</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    body { margin: 0; overflow: hidden; font-family: system-ui, sans-serif; background: #f0f2f5; }
+    #overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; justify-content: center; align-items: center; z-index: 9000; }
+    #start-button { padding: 15px 28px; font-size: 18px; background: rgba(255,255,255,0.9); color: black; border: none; border-radius: 16px; box-shadow: 0 4px 14px rgba(0,0,0,0.1); cursor: pointer; transition: all 0.2s; font-weight: 600; }
+    #start-button:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(0,0,0,0.15); }
+    #status { position: fixed; bottom: 40px; left: 50%; transform: translateX(-50%); background: rgba(255,255,255,0.9); color: black; padding: 12px 24px; border-radius: 16px; font-size: 16px; font-weight: 500; display: none; z-index: 9999; }
+    .exit-ar { position: fixed; top: 20px; right: 20px; background: white; color: black; border: none; border-radius: 50%; width: 46px; height: 46px; display: none; align-items: center; justify-content: center; font-size: 24px; cursor: pointer; z-index: 9999; }
+    .xr-active .exit-ar { display: flex; }
+    video { display: block; width: 1px; height: 1px; position: absolute; opacity: 0.01; }
+  </style>
+</head>
+<body>
+  <div id="overlay"><button id="start-button">Start Vision Pro Dialog</button></div>
+  <button class="exit-ar" id="exit-ar">×</button>
+  <div id="status"></div>
+  
+  <!-- Video elements for content -->
+  <video id="video-1" loop muted playsinline crossorigin="anonymous"></video>
+  <video id="video-2" loop muted playsinline crossorigin="anonymous"></video>
+  <video id="video-3" loop muted playsinline crossorigin="anonymous"></video>
+  
+  <script type="module">
+    import * as THREE from 'https://unpkg.com/three@0.150.1/build/three.module.js';
+
+    // Main variables
+    let camera, scene, renderer, controllers = [], xrSession = null, raycaster, tempMatrix, dialogSystem;
+    
+    // Simple tweening utility
+    class Tween {
+      constructor(object, property, startValue, endValue, duration, easing, onComplete) {
+        this.object = object;
+        this.property = property;
+        this.startValue = startValue;
+        this.endValue = endValue;
+        this.duration = duration;
+        this.startTime = null;
+        this.isActive = true;
+        this.easing = easing || Tween.easeOutCubic;
+        this.onComplete = onComplete;
+      }
+      
+      static easeOutCubic(t) {
+        return 1 - Math.pow(1 - t, 3);
+      }
+      
+      static easeOutElastic(t) {
+        const p = 0.3;
+        return Math.pow(2, -10 * t) * Math.sin((t - p / 4) * (2 * Math.PI) / p) + 1;
+      }
+      
+      static easeOutBack(t) {
+        const c1 = 1.70158;
+        const c3 = c1 + 1;
+        return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
+      }
+      
+      update(currentTime) {
+        if (!this.isActive) return true;
+        
+        if (this.startTime === null) {
+          this.startTime = currentTime;
+        }
+        
+        const elapsed = currentTime - this.startTime;
+        const progress = Math.min(elapsed / this.duration, 1);
+        const easedProgress = this.easing(progress);
+        
+        // Handle both direct properties and nested objects
+        if (typeof this.property === 'string') {
+          const value = this.startValue + (this.endValue - this.startValue) * easedProgress;
+          this.object[this.property] = value;
+        } else if (Array.isArray(this.property)) {
+          // For objects like position, scale
+          let target = this.object;
+          for (let i = 0; i < this.property.length - 1; i++) {
+            target = target[this.property[i]];
+          }
+          const lastProp = this.property[this.property.length - 1];
+          const value = this.startValue + (this.endValue - this.startValue) * easedProgress;
+          target[lastProp] = value;
+        }
+        
+        if (progress >= 1) {
+          this.isActive = false;
+          if (this.onComplete) this.onComplete();
+          return true;
+        }
+        
+        return false;
+      }
+    }
+    
+    // Tween manager
+    class TweenManager {
+      constructor() {
+        this.tweens = [];
+      }
+      
+      add(tween) {
+        this.tweens.push(tween);
+        return tween;
+      }
+      
+      update(currentTime) {
+        let i = this.tweens.length;
+        while(i--) {
+          if (this.tweens[i].update(currentTime)) {
+            this.tweens.splice(i, 1);
+          }
+        }
+      }
+      
+      clear() {
+        this.tweens = [];
+      }
+    }
+    
+    const tweenManager = new TweenManager();
+    
+    function init() {
+      // Scene setup
+      scene = new THREE.Scene();
+      camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 20);
+      
+      // Renderer setup
+      renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.xr.enabled = true;
+      renderer.setClearColor(0x000000, 0);
+      document.body.appendChild(renderer.domElement);
+
+      // Basic lighting
+      scene.add(new THREE.AmbientLight(0xffffff, 1.2));
+      
+      // Interaction setup
+      raycaster = new THREE.Raycaster();
+      tempMatrix = new THREE.Matrix4();
+      dialogSystem = new DialogSystem();
+      
+      // Event listeners
+      window.addEventListener('resize', () => {
+        if (camera) {
+          camera.aspect = window.innerWidth / window.innerHeight;
+          camera.updateProjectionMatrix();
+        }
+        if (renderer) renderer.setSize(window.innerWidth, window.innerHeight);
+      });
+      
+      document.getElementById('start-button').addEventListener('click', startARSession);
+      document.getElementById('exit-ar').addEventListener('click', () => { if (xrSession) xrSession.end(); });
+    }
+
+    // Start AR session
+    function startARSession() {
+      if (!navigator.xr) {
+        updateStatus('WebXR not supported in this browser.');
+        return;
+      }
+      
+      // Unlock videos for autoplay (user gesture)
+      document.querySelectorAll('video').forEach(video => {
+        video.play().catch(() => {});
+        video.pause();
+      });
+      
+      navigator.xr.isSessionSupported('immersive-ar')
+        .then(supported => {
+          if (supported) {
+            navigator.xr.requestSession('immersive-ar', { 
+              requiredFeatures: ['hit-test'],
+              optionalFeatures: ['hand-tracking'],
+            })
+            .then(onSessionStarted)
+            .catch(err => updateStatus('Failed to start AR: ' + err.message));
+          } else {
+            updateStatus('WebXR AR not supported on this device.');
+          }
+        });
+    }
+
+    // Handle AR session start
+    function onSessionStarted(session) {
+      xrSession = session;
+      document.getElementById('start-button').style.display = 'none';
+      document.body.classList.add('xr-active');
+      renderer.xr.setReferenceSpaceType('local');
+      renderer.xr.setSession(session);
+      
+      // Setup controllers
+      controllers = [0, 1].map(i => {
+        const controller = renderer.xr.getController(i);
+        controller.userData.id = i;
+        controller.userData.isSelecting = false;
+        
+        // Visual indicator (subtle hand indicator)
+        const handMesh = new THREE.Mesh(
+          new THREE.SphereGeometry(0.01, 8, 8),
+          new THREE.MeshBasicMaterial({
+            color: 0xffffff,
+            transparent: true,
+            opacity: 0.4
+          })
+        );
+        controller.add(handMesh);
+        
+        controller.addEventListener('selectstart', onControllerSelectStart);
+        controller.addEventListener('selectend', event => { event.target.userData.isSelecting = false; });
+        scene.add(controller);
+        return controller;
+      });
+      
+      // Initialize dialog system and start
+      dialogSystem.init(scene, camera);
+      setTimeout(() => dialogSystem.startDialogSequence(), 1000);
+      
+      renderer.setAnimationLoop(render);
+      session.addEventListener('end', onSessionEnd);
+      updateStatus('Vision Pro Dialog ready! Tap anywhere on the panel to advance.');
+    }
+    
+    function onSessionEnd() {
+      document.body.classList.remove('xr-active');
+      document.getElementById('start-button').style.display = 'block';
+      document.getElementById('status').style.display = 'none';
+      controllers = [];
+      renderer.setAnimationLoop(null);
+      xrSession = null;
+      
+      // Clean up tweens
+      tweenManager.clear();
+      
+      // Clean up scene
+      while(scene.children.length > 0) { 
+        const object = scene.children[0];
+        if (object.geometry) object.geometry.dispose();
+        if (object.material) {
+          if (Array.isArray(object.material)) {
+            object.material.forEach(m => m.dispose());
+          } else {
+            object.material.dispose();
+          }
+        }
+        scene.remove(object); 
+      }
+      
+      // Pause videos
+      document.querySelectorAll('video').forEach(video => video.pause());
+    }
+    
+    function onControllerSelectStart(event) {
+      const controller = event.target;
+      controller.userData.isSelecting = true;
+      
+      // Raycasting for interaction
+      tempMatrix.identity().extractRotation(controller.matrixWorld);
+      raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
+      raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix);
+      
+      const interactiveObjects = dialogSystem.getInteractiveObjects();
+      const intersects = raycaster.intersectObjects(interactiveObjects, true);
+      
+      if (intersects.length > 0) {
+        // Find interactive parent
+        let current = intersects[0].object;
+        while (current) {
+          if (current.userData && current.userData.onClick) {
+            // Trigger pulse animation
+            pulseMesh(current);
+            current.userData.onClick();
+            break;
+          }
+          current = current.parent;
+        }
+      }
+    }
+    
+    // Create pulse animation for mesh
+    function pulseMesh(mesh) {
+      if (!mesh) return;
+      
+      // Store original scale
+      if (!mesh.userData.originalScale) {
+        mesh.userData.originalScale = mesh.scale.clone();
+      }
+      
+      // Scale up quickly
+      const originalScaleX = mesh.userData.originalScale.x;
+      const originalScaleY = mesh.userData.originalScale.y;
+      const originalScaleZ = mesh.userData.originalScale.z;
+      
+      mesh.scale.set(
+        originalScaleX * 1.05, 
+        originalScaleY * 1.05, 
+        originalScaleZ * 1.05
+      );
+      
+      // Scale back down with elastic effect
+      tweenManager.add(new Tween(
+        mesh.scale, 
+        'x', 
+        mesh.scale.x, 
+        originalScaleX, 
+        300, 
+        Tween.easeOutElastic
+      ));
+      
+      tweenManager.add(new Tween(
+        mesh.scale, 
+        'y', 
+        mesh.scale.y, 
+        originalScaleY, 
+        300, 
+        Tween.easeOutElastic
+      ));
+      
+      tweenManager.add(new Tween(
+        mesh.scale, 
+        'z', 
+        mesh.scale.z, 
+        originalScaleZ, 
+        300, 
+        Tween.easeOutElastic
+      ));
+    }
+    
+    function render(timestamp) {
+      // Update tweens
+      tweenManager.update(timestamp);
+      
+      // Update dialog system
+      if (dialogSystem) dialogSystem.update(camera, timestamp);
+      
+      // Check controller interaction
+      controllers.forEach(controller => {
+        if (controller.userData.isSelecting) {
+          tempMatrix.identity().extractRotation(controller.matrixWorld);
+          raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
+          raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix);
+          
+          const interactiveObjects = dialogSystem.getInteractiveObjects();
+          const intersects = raycaster.intersectObjects(interactiveObjects, true);
+          
+          if (intersects.length > 0) {
+            // Simple visual feedback
+            const object = intersects[0].object;
+            if (object.material && !object.userData.isHovered) {
+              object.userData.isHovered = true;
+              // Apply subtle effect rather than color change for better performance
+              if (object.scale.x === 1) {
+                object.scale.set(1.05, 1.05, 1.05);
+              }
+            }
+          }
+        }
+      });
+      
+      renderer.render(scene, camera);
+    }
+    
+    function updateStatus(message) {
+      const statusElement = document.getElementById('status');
+      statusElement.textContent = message;
+      statusElement.style.display = 'block';
+      
+      // Auto-hide after 3 seconds for non-error messages
+      if (!message.includes('error') && !message.includes('not supported')) {
+        setTimeout(() => { statusElement.style.display = 'none'; }, 3000);
+      }
+    }
+    
+    // Vision Pro Style Dialog System - Simplified version
+    class DialogSystem {
+      constructor() {
+        this.dialogPanel = null;
+        this.currentDialogIndex = 0;
+        this.isActive = false;
+        this.textElement = null;
+        this.videoElement = null;
+        this.dialogGroup = null;
+        this.videoMaterials = {};
+        this.fixedPosition = new THREE.Vector3(0, 0, -2); // Fixed position further out
+        
+        // Dialog content with embedded video flags
+        this.dialogSequence = [
+          { 
+            message: "Welcome to the Vision Pro style interface. This demonstrates a clean, minimal design inspired by modern spatial computing interfaces.", 
+            showVideo: false 
+          },
+          { 
+            message: "Tap anywhere on this panel to advance to the next card. The next card will showcase how videos can be integrated into this interface.", 
+            showVideo: false 
+          },
+          { 
+            message: "Here's a demonstration of embedded video content:", 
+            showVideo: true,
+            videoIndex: 1 
+          },
+          { 
+            message: "The beige panel with orange glow creates depth while maintaining readability in various lighting conditions.", 
+            showVideo: false 
+          },
+          { 
+            message: "Videos can help explain complex concepts in spatial computing:", 
+            showVideo: true,
+            videoIndex: 2 
+          }
+        ];
+        
+        // Preload video assets
+        this.loadAssets();
+      }
+      
+      loadAssets() {
+        // Create video textures
+        const setupVideo = (index, url, elementId) => {
+          const video = document.getElementById(elementId);
+          
+          // Use placeholder video URLs or data URLs
+          // For a real app, you would use actual video files
+          const placeholderUrl = url || this.createVideoPlaceholder(index);
+          video.src = placeholderUrl;
+          
+          const texture = new THREE.VideoTexture(video);
+          texture.minFilter = THREE.LinearFilter;
+          texture.magFilter = THREE.LinearFilter;
+          
+          this.videoMaterials[index] = {
+            video: video,
+            texture: texture,
+            material: new THREE.MeshBasicMaterial({
+              map: texture,
+              transparent: true,
+              side: THREE.DoubleSide
+            })
+          };
+        };
+        
+        // Setup placeholder videos (in a real app, replace with actual video URLs)
+        setupVideo(1, null, 'video-1');
+        setupVideo(2, null, 'video-2');
+        setupVideo(3, null, 'video-3');
+      }
+      
+      // Create placeholder animated "video" content using canvas
+      createVideoPlaceholder(index) {
+        const canvas = document.createElement('canvas');
+        canvas.width = 512;
+        canvas.height = 288; // 16:9 aspect ratio
+        const ctx = canvas.getContext('2d');
+        
+        // Create a data URL for a "fake" video placeholder
+        const colors = ['#34C759', '#5AC8FA', '#AF52DE'];
+        const color = colors[(index - 1) % colors.length];
+        
+        // Draw something that looks like a video with animation
+        const drawFrame = () => {
+          ctx.fillStyle = color;
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          
+          // Draw a pattern
+          ctx.fillStyle = 'rgba(255,255,255,0.2)';
+          const time = Date.now() / 1000;
+          for (let i = 0; i < 10; i++) {
+            const x = Math.sin(time + i * 0.7) * canvas.width * 0.4 + canvas.width * 0.5;
+            const y = Math.cos(time + i * 0.7) * canvas.height * 0.4 + canvas.height * 0.5;
+            const size = 30 + Math.sin(time * 2 + i) * 15;
+            ctx.beginPath();
+            ctx.arc(x, y, size, 0, Math.PI * 2);
+            ctx.fill();
+          }
+          
+          // Draw fake play controls
+          ctx.fillStyle = 'rgba(255,255,255,0.8)';
+          ctx.beginPath();
+          ctx.arc(canvas.width / 2, canvas.height / 2, 25, 0, Math.PI * 2);
+          ctx.fill();
+          
+          ctx.fillStyle = color;
+          ctx.beginPath();
+          ctx.moveTo(canvas.width / 2 - 8, canvas.height / 2 - 15);
+          ctx.lineTo(canvas.width / 2 - 8, canvas.height / 2 + 15);
+          ctx.lineTo(canvas.width / 2 + 15, canvas.height / 2);
+          ctx.closePath();
+          ctx.fill();
+        };
+        
+        // Initial draw
+        drawFrame();
+        
+        // To make it actually animate, we would need to repeatedly update the texture
+        // This is just a simple placeholder, so we'll just return a static image
+        return canvas.toDataURL();
+      }
+      
+      init(scene, camera) {
+        this.scene = scene;
+        this.camera = camera;
+        
+        // Create dialog group
+        this.dialogGroup = new THREE.Group();
+        this.dialogGroup.position.set(0, 0, -2); // Position further away from user
+        // Make initially invisible for animation
+        this.dialogGroup.scale.set(0.5, 0.5, 0.5);
+        this.dialogGroup.userData.opacity = 0;
+        this.scene.add(this.dialogGroup);
+        
+        this.createDialogPanel();
+      }
+      
+      createDialogPanel() {
+        const panel = new THREE.Group();
+        const panelWidth = 0.7;
+        const panelHeight = 0.4;
+        
+        // Create simplified panel with orange glow
+        this.createSimplePanel(panel, panelWidth, panelHeight);
+        
+        // Text canvas for dynamic text rendering
+        const textCanvas = document.createElement('canvas');
+        textCanvas.width = 512;
+        textCanvas.height = 256;
+        const textCtx = textCanvas.getContext('2d');
+        const textTexture = new THREE.CanvasTexture(textCanvas);
+        
+        // Text element
+        this.textElement = new THREE.Mesh(
+          new THREE.PlaneGeometry(panelWidth * 0.9, panelHeight * 0.5),
+          new THREE.MeshBasicMaterial({
+            map: textTexture,
+            transparent: true,
+            side: THREE.DoubleSide
+          })
+        );
+        this.textElement.position.set(0, panelHeight * 0.15, 0.01);
+        
+        // Method to update text
+        this.textElement.userData.updateText = (text) => {
+          textCtx.clearRect(0, 0, 512, 256);
+          
+          // Set text properties for Vision Pro style
+          textCtx.font = '24px sans-serif';
+          textCtx.fillStyle = 'rgba(0,0,0,0.8)';
+          textCtx.textAlign = 'center';
+          textCtx.textBaseline = 'middle';
+          
+          // Word wrap for centered text
+          const words = text.split(' ');
+          const maxWidth = 450;
+          let lines = [];
+          let currentLine = '';
+          
+          for (let i = 0; i < words.length; i++) {
+            const testLine = currentLine + words[i] + ' ';
+            const metrics = textCtx.measureText(testLine);
+            
+            if (metrics.width > maxWidth && i > 0) {
+              lines.push(currentLine.trim());
+              currentLine = words[i] + ' ';
+            } else {
+              currentLine = testLine;
+            }
+          }
+          lines.push(currentLine.trim());
+          
+          // Draw centered text
+          const lineHeight = 32;
+          const totalTextHeight = lines.length * lineHeight;
+          let yPos = 128 - (totalTextHeight / 2) + (lineHeight / 2);
+          
+          lines.forEach(line => {
+            textCtx.fillText(line, 256, yPos);
+            yPos += lineHeight;
+          });
+          
+          textTexture.needsUpdate = true;
+        };
+        
+        panel.add(this.textElement);
+        
+        // Video element for displaying videos in the center
+        const videoWidth = panelWidth * 0.6;
+        const videoHeight = videoWidth * (9/16); // 16:9 aspect ratio
+        
+        this.videoElement = new THREE.Mesh(
+          new THREE.PlaneGeometry(videoWidth, videoHeight),
+          new THREE.MeshBasicMaterial({
+            color: 0xffffff,
+            transparent: true,
+            opacity: 0
+          })
+        );
+        this.videoElement.position.set(0, -panelHeight * 0.08, 0.015);
+        panel.add(this.videoElement);
+        
+        this.dialogGroup.add(panel);
+        this.dialogPanel = panel;
+        this.dialogPanel.visible = false;
+      }
+      
+      // Create a simplified panel with orange glow
+      createSimplePanel(panel, width, height) {
+        // Main panel with beige color and transparency
+        const panelGeometry = new THREE.RoundedBoxGeometry(width, height, 0.01, 0.04, 4);
+        const panelMaterial = new THREE.MeshBasicMaterial({
+          color: 0xf5e8d3, // Beige color
+          transparent: true,
+          opacity: 0.85
+        });
+        
+        const mainPanel = new THREE.Mesh(panelGeometry, panelMaterial);
+        panel.add(mainPanel);
+        
+        // Orange glow effect using a slightly larger, blurred plane behind the panel
+        const glowGeometry = new THREE.PlaneGeometry(width * 1.05, height * 1.05);
+        const glowMaterial = new THREE.MeshBasicMaterial({
+          color: 0xff8c42, // Orange color
+          transparent: true,
+          opacity: 0.25,
+          side: THREE.DoubleSide
+        });
+        
+        const glowPlane = new THREE.Mesh(glowGeometry, glowMaterial);
+        glowPlane.position.z = -0.01; // Just behind the main panel
+        panel.add(glowPlane);
+        
+        // Make entire panel interactive
+        mainPanel.userData.onClick = () => {
+          this.showNextDialog();
+        };
+        
+        return mainPanel;
+      }
+      
+      startDialogSequence() {
+        this.isActive = true;
+        this.currentDialogIndex = 0;
+        this.dialogPanel.visible = true;
+        
+        // Entrance animation
+        this.animateEntranceEffect();
+        
+        this.showCurrentDialog();
+      }
+      
+      animateEntranceEffect() {
+        // Reset transforms
+        this.dialogGroup.scale.set(0.6, 0.6, 0.6);
+        this.dialogGroup.position.copy(this.fixedPosition);
+        this.dialogGroup.position.y += 0.2; // Start a bit higher for animation
+        
+        // Apply materials opacity
+        this.dialogPanel.traverse(obj => {
+          if (obj.material && obj.material.opacity !== undefined) {
+            obj.material.opacity = 0;
+          }
+        });
+        
+        // Animate scale
+        tweenManager.add(new Tween(
+          this.dialogGroup.scale, 
+          'x', 
+          0.6, 
+          1.0, 
+          600, 
+          Tween.easeOutCubic
+        ));
+        
+        tweenManager.add(new Tween(
+          this.dialogGroup.scale, 
+          'y', 
+          0.6, 
+          1.0, 
+          600, 
+          Tween.easeOutCubic
+        ));
+        
+        // Animate position
+        tweenManager.add(new Tween(
+          this.dialogGroup.position, 
+          'y', 
+          this.dialogGroup.position.y, 
+          this.fixedPosition.y, 
+          700, 
+          Tween.easeOutCubic
+        ));
+        
+        // Fade in all materials
+        this.dialogPanel.traverse(obj => {
+          if (obj.material && obj.material.opacity !== undefined) {
+            const targetOpacity = obj.material.opacity === 0 ? 
+              (obj.userData.targetOpacity || 
+               (obj.material.color && obj.material.color.getHex() === 0xff8c42 ? 0.25 : 0.85)) : 
+              obj.material.opacity;
+            
+            tweenManager.add(new Tween(
+              obj.material, 
+              'opacity', 
+              0, 
+              targetOpacity, 
+              800, 
+              Tween.easeOutCubic
+            ));
+          }
+        });
+      }
+      
+      animateExitEffect(onComplete) {
+        // Scale down
+        tweenManager.add(new Tween(
+          this.dialogGroup.scale, 
+          'x', 
+          this.dialogGroup.scale.x, 
+          0.6, 
+          400, 
+          Tween.easeOutCubic
+        ));
+        
+        tweenManager.add(new Tween(
+          this.dialogGroup.scale, 
+          'y', 
+          this.dialogGroup.scale.y, 
+          0.6, 
+          400, 
+          Tween.easeOutCubic
+        ));
+        
+        // Move away
+        tweenManager.add(new Tween(
+          this.dialogGroup.position, 
+          'y', 
+          this.dialogGroup.position.y, 
+          this.dialogGroup.position.y - 0.2, 
+          500, 
+          Tween.easeOutCubic
+        ));
+        
+        // Fade out all materials
+        this.dialogPanel.traverse(obj => {
+          if (obj.material && obj.material.opacity > 0) {
+            tweenManager.add(new Tween(
+              obj.material, 
+              'opacity', 
+              obj.material.opacity, 
+              0, 
+              300, 
+              Tween.easeOutCubic,
+              onComplete
+            ));
+          }
+        });
+      }
+      
+      showCurrentDialog() {
+        if (this.currentDialogIndex >= this.dialogSequence.length) {
+          // Loop back to the beginning
+          this.currentDialogIndex = 0;
+          updateStatus("Restarting dialog sequence...");
+        }
+        
+        const dialog = this.dialogSequence[this.currentDialogIndex];
+        
+        // Update text
+        this.textElement.userData.updateText(dialog.message);
+        
+        // Handle video display
+        if (dialog.showVideo && dialog.videoIndex && this.videoMaterials[dialog.videoIndex]) {
+          const videoMaterial = this.videoMaterials[dialog.videoIndex].material;
+          this.videoElement.material = videoMaterial;
+          
+          // Animate video appearance
+          tweenManager.add(new Tween(
+            this.videoElement.material, 
+            'opacity', 
+            0, 
+            1, 
+            400, 
+            Tween.easeOutCubic
+          ));
+          
+          this.videoMaterials[dialog.videoIndex].video.play().catch(() => {});
+        } else {
+          // Hide video when not needed
+          tweenManager.add(new Tween(
+            this.videoElement.material, 
+            'opacity', 
+            this.videoElement.material.opacity, 
+            0, 
+            200, 
+            Tween.easeOutCubic,
+            () => {
+              // Pause all videos when not showing
+              Object.values(this.videoMaterials).forEach(material => {
+                if (material.video) material.video.pause();
+              });
+            }
+          ));
+        }
+      }
+      
+      showNextDialog() {
+        // Animate transition to next dialog
+        this.animateExitEffect(() => {
+          this.currentDialogIndex++;
+          this.showCurrentDialog();
+          this.animateEntranceEffect();
+        });
+      }
+      
+      update(camera, timestamp) {
+        if (!this.isActive || !this.dialogGroup || !camera) return;
+        
+        // Keep the panel in a fixed position but rotate to face the user
+        const cameraDirection = new THREE.Vector3().subVectors(camera.position, this.dialogGroup.position);
+        this.dialogGroup.lookAt(camera.position);
+        
+        // Update video textures when visible
+        if (this.dialogSequence[this.currentDialogIndex] && 
+            this.dialogSequence[this.currentDialogIndex].showVideo) {
+          const videoIndex = this.dialogSequence[this.currentDialogIndex].videoIndex;
+          if (this.videoMaterials[videoIndex] && this.videoMaterials[videoIndex].texture) {
+            this.videoMaterials[videoIndex].texture.needsUpdate = true;
+          }
+        }
+      }
+      
+      getInteractiveObjects() {
+        // Return all objects that can be interacted with
+        return this.dialogPanel ? [this.dialogPanel.children[0]] : []; // Return the main panel
+      }
+    }
+    
+    // Initialize everything
+    document.addEventListener('DOMContentLoaded', init);
+  </script>
+</body>
+</html>
